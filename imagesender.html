@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WLED Pixel Controller</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        .frame {
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .frame h2 {
+            margin: 0 0 10px 0;
+            font-size: 1rem;
+        }
+        .form-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        input[type="text"], input[type="number"] {
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+        button {
+            padding: 6px 12px;
+            background-color: #0078d4;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #006cbd;
+        }
+        #canvasContainer {
+            position: relative;
+            width: 400px;
+            height: 400px;
+            border: 1px solid #ccc;
+            overflow: auto;
+            margin: 10px 0;
+        }
+        #imageCanvas {
+            position: absolute;
+        }
+        #status {
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            min-height: 50px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="frame">
+        <h2>WLED Connection</h2>
+        <div class="form-row">
+            <label for="ipAddress">IP Address:</label>
+            <input type="text" id="ipAddress" value="192.168.5.4">
+        </div>
+    </div>
+
+    <div class="frame">
+        <h2>Matrix Configuration</h2>
+        <div class="form-row">
+            <label for="matrixWidth">Width:</label>
+            <input type="number" id="matrixWidth" value="16" style="width: 60px">
+            <label for="matrixHeight">Height:</label>
+            <input type="number" id="matrixHeight" value="16" style="width: 60px">
+        </div>
+    </div>
+
+    <div class="frame">
+        <h2>Image Control</h2>
+        <div class="form-row">
+            <input type="file" id="imageInput" accept="image/*" style="display: none">
+            <button onclick="document.getElementById('imageInput').click()">Load Image</button>
+            <button onclick="generateMatrix()">Generate Matrix</button>
+        </div>
+    </div>
+
+    <div class="frame">
+        <div id="canvasContainer">
+            <canvas id="imageCanvas" width="400" height="400"></canvas>
+        </div>
+    </div>
+
+    <div class="frame">
+        <h2>Single Pixel Control</h2>
+        <div class="form-row">
+            <label for="pixelNumber">Pixel Number:</label>
+            <input type="number" id="pixelNumber" value="0" style="width: 60px">
+            <input type="color" id="colorPicker" value="#ff0000">
+            <button onclick="setPixel()">Set Pixel</button>
+        </div>
+    </div>
+
+    <div id="status"></div>
+
+    <script>
+        let currentImage = null;
+        let selectionRect = null;
+        let isDragging = false;
+        let startX, startY;
+        let canvas = document.getElementById('imageCanvas');
+        let ctx = canvas.getContext('2d');
+        let dragMode = null;
+        let fixedCorner = null;
+        let scaleCorner = null;
+
+        // Handle file input
+        document.getElementById('imageInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    const img = new Image();
+                    img.onload = function() {
+                        currentImage = img;
+                        // Resize image to fit canvas while maintaining aspect ratio
+                        const scale = Math.min(400 / img.width, 400 / img.height);
+                        canvas.width = img.width * scale;
+                        canvas.height = img.height * scale;
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        
+                        // Create initial selection rectangle
+                        const matrixRatio = getMatrixRatio();
+                        const rectWidth = Math.min(100, canvas.width);
+                        const rectHeight = rectWidth / matrixRatio;
+                        
+                        selectionRect = {
+                            x: (canvas.width - rectWidth) / 2,
+                            y: (canvas.height - rectHeight) / 2,
+                            width: rectWidth,
+                            height: rectHeight
+                        };
+                        drawAll();
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        function getMatrixRatio() {
+            const width = parseInt(document.getElementById('matrixWidth').value);
+            const height = parseInt(document.getElementById('matrixHeight').value);
+            return width / height;
+        }
+
+        function drawAll() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (currentImage) {
+                ctx.drawImage(currentImage, 0, 0, canvas.width, canvas.height);
+            }
+            if (selectionRect) {
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(selectionRect.x, selectionRect.y, selectionRect.width, selectionRect.height);
+            }
+        }
+
+        canvas.addEventListener('mousedown', function(e) {
+            if (!selectionRect) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            startX = e.clientX - rect.left;
+            startY = e.clientY - rect.top;
+            
+            // Check if click is inside rectangle
+            if (startX >= selectionRect.x && startX <= selectionRect.x + selectionRect.width &&
+                startY >= selectionRect.y && startY <= selectionRect.y + selectionRect.height) {
+                dragMode = 'move';
+            } else {
+                dragMode = 'scale';
+                // Find nearest corner
+                const corners = [
+                    {x: selectionRect.x, y: selectionRect.y},
+                    {x: selectionRect.x + selectionRect.width, y: selectionRect.y},
+                    {x: selectionRect.x, y: selectionRect.y + selectionRect.height},
+                    {x: selectionRect.x + selectionRect.width, y: selectionRect.y + selectionRect.height}
+                ];
+                fixedCorner = corners.reduce((a, b) => {
+                    const aDist = Math.hypot(a.x - startX, a.y - startY);
+                    const bDist = Math.hypot(b.x - startX, b.y - startY);
+                    return aDist < bDist ? a : b;
+                });
+            }
+            isDragging = true;
+        });
+
+        canvas.addEventListener('mousemove', function(e) {
+            if (!isDragging || !selectionRect) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const dx = x - startX;
+            const dy = y - startY;
+            
+            if (dragMode === 'move') {
+                selectionRect.x = Math.max(0, Math.min(canvas.width - selectionRect.width, selectionRect.x + dx));
+                selectionRect.y = Math.max(0, Math.min(canvas.height - selectionRect.height, selectionRect.y + dy));
+                startX = x;
+                startY = y;
+            } else if (dragMode === 'scale') {
+                const matrixRatio = getMatrixRatio();
+                let newWidth, newHeight;
+                
+                if (Math.abs(dx) / matrixRatio > Math.abs(dy)) {
+                    newWidth = Math.abs(dx);
+                    newHeight = newWidth / matrixRatio;
+                } else {
+                    newHeight = Math.abs(dy);
+                    newWidth = newHeight * matrixRatio;
+                }
+                
+                // Ensure minimum size
+                newWidth = Math.max(newWidth, 20);
+                newHeight = newWidth / matrixRatio;
+                
+                // Update rectangle based on fixed corner
+                if (fixedCorner.x === selectionRect.x && fixedCorner.y === selectionRect.y) {
+                    selectionRect.width = newWidth;
+                    selectionRect.height = newHeight;
+                } else if (fixedCorner.x === selectionRect.x + selectionRect.width && 
+                         fixedCorner.y === selectionRect.y + selectionRect.height) {
+                    selectionRect.x = fixedCorner.x - newWidth;
+                    selectionRect.y = fixedCorner.y - newHeight;
+                    selectionRect.width = newWidth;
+                    selectionRect.height = newHeight;
+                }
+            }
+            
+            drawAll();
+        });
+
+        canvas.addEventListener('mouseup', function() {
+            isDragging = false;
+            dragMode = null;
+            fixedCorner = null;
+        });
+
+        async function generateMatrix() {
+            if (!currentImage || !selectionRect) {
+                updateStatus('Please load an image and select an area first');
+                return;
+            }
+            
+            const matrixWidth = parseInt(document.getElementById('matrixWidth').value);
+            const matrixHeight = parseInt(document.getElementById('matrixHeight').value);
+            
+            // Create a temporary canvas for the selected region
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = matrixWidth;
+            tempCanvas.height = matrixHeight;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Draw the selected region scaled to matrix dimensions
+            tempCtx.drawImage(canvas, 
+                selectionRect.x, selectionRect.y, selectionRect.width, selectionRect.height,
+                0, 0, matrixWidth, matrixHeight
+            );
+            
+            // Get pixel data
+            const imageData = tempCtx.getImageData(0, 0, matrixWidth, matrixHeight);
+            const pixels = [];
+            
+            // Convert to WLED format
+            for (let i = 0; i < imageData.data.length; i += 4) {
+                pixels.push([
+                    imageData.data[i],     // R
+                    imageData.data[i + 1], // G
+                    imageData.data[i + 2]  // B
+                ]);
+            }
+            
+            // Create segment data
+            const data = {
+                on: true,
+                bri: 255,
+                seg: [{
+                    id: 0,
+                    i: pixels
+                }]
+            };
+            
+            // Send to WLED
+            await sendToWLED(data);
+        }
+
+        async function setPixel() {
+            const pixelNum = parseInt(document.getElementById('pixelNumber').value);
+            const color = document.getElementById('colorPicker').value;
+            
+            // Convert hex color to RGB
+            const r = parseInt(color.substr(1,2), 16);
+            const g = parseInt(color.substr(3,2), 16);
+            const b = parseInt(color.substr(5,2), 16);
+            
+            // Create pixel array
+            const pixels = Array(pixelNum).fill([0, 0, 0]);
+            pixels.push([r, g, b]);
+            
+            const data = {
+                on: true,
+                bri: 255,
+                seg: [{
+                    id: 0,
+                    i: pixels
+                }]
+            };
+            
+            await sendToWLED(data);
+        }
+
+        async function sendToWLED(data) {
+            const ip = document.getElementById('ipAddress').value;
+            const url = `http://${ip}/json/state`;
+            
+            try {
+                updateStatus(`Sending request:\n${JSON.stringify(data, null, 2)}`);
+                
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                const responseData = await response.json();
+                
+                if (response.ok) {
+                    updateStatus(
+                        `Request sent:\n${JSON.stringify(data, null, 2)}\n\n` +
+                        `Response:\n${JSON.stringify(responseData, null, 2)}`
+                    );
+                } else {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`);
+            }
+        }
+
+        function updateStatus(message) {
+            document.getElementById('status').textContent = message;
+        }
+    </script>
+</body>
+</html>
