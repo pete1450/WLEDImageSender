@@ -9,5 +9,11 @@ Easily send an image to a WLED matrix. Copilot wrote it.
 
 I was playing around with sending single pixels so that is an option at the bottom too. This will show the rquest and the response.
 
+## Settings
 ![settings](image.png)
+
+## Web version
+![web version](image-2.png)
+
+## Results
 ![output](image-1.png)
